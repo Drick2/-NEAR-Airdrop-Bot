@@ -26,7 +26,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_markup_inline = InlineKeyboardMarkup(keyboard)
 
     # Rainbow orb image (change this URL to yours)
-    orb_url = "https://i.imgur.com/8zXvK9P.png"   # ← REPLACE THIS WITH YOUR IMAGE LINK
+    orb_url = "https://imgur.com/a/IsXYatl"   # ← REPLACE THIS WITH YOUR IMAGE LINK
 
     await update.message.reply_photo(photo=orb_url, caption="🌈 $NEAR Airdrop – Nearer Than We Think! 🌈")
 
