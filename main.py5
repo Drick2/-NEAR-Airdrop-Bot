@@ -1,0 +1,522 @@
+import os
+import sqlite3
+import logging
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+GROUP_ID = -5217445909          # Your group ID
+CHANNEL_ID = -1003863200197     # Your channel ID
+
+if not TOKEN:
+    raise ValueError("BOT_TOKEN not found in .env file!")
+if ADMIN_ID == 0:
+    raise ValueError("ADMIN_ID not set in .env file!")
+
+# Logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# ---------- Database Setup ----------
+conn = sqlite3.connect('users.db', check_same_thread=False)
+c = conn.cursor()
+c.execute('''CREATE TABLE IF NOT EXISTS users
+             (user_id INTEGER PRIMARY KEY,
+              first_name TEXT,
+              username TEXT,
+              wallet TEXT,
+              points INTEGER DEFAULT 0,
+              referrals INTEGER DEFAULT 0,
+              referrer_id INTEGER,
+              joined_date TEXT,
+              last_daily TEXT,
+              daily_streak INTEGER DEFAULT 0,
+              tasks_completed INTEGER DEFAULT 0,
+              pending_screenshot TEXT)''')
+conn.commit()
+
+c.execute('''CREATE TABLE IF NOT EXISTS tasks
+             (id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              description TEXT,
+              reward INTEGER DEFAULT 0,
+              active INTEGER DEFAULT 1)''')
+conn.commit()
+
+def get_user(user_id):
+    c.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
+    return c.fetchone()
+
+def create_user(user_id, first_name, referrer_id=None):
+    now = datetime.now().isoformat()
+    c.execute("""INSERT INTO users 
+                  (user_id, first_name, points, referrals, referrer_id, joined_date, tasks_completed) 
+                  VALUES (?,?,?,?,?,?,?)""",
+              (user_id, first_name, 0, 0, referrer_id, now, 0))
+    conn.commit()
+
+def update_user(user_id, **kwargs):
+    for key, value in kwargs.items():
+        c.execute(f"UPDATE users SET {key}=? WHERE user_id=?", (value, user_id))
+    conn.commit()
+
+def add_points(user_id, points):
+    c.execute("UPDATE users SET points = points + ? WHERE user_id=?", (points, user_id))
+    conn.commit()
+    c.execute("SELECT points FROM users WHERE user_id=?", (user_id,))
+    return c.fetchone()[0]
+
+def add_referral(user_id):
+    c.execute("UPDATE users SET referrals = referrals + 1 WHERE user_id=?", (user_id,))
+    conn.commit()
+    c.execute("SELECT referrals FROM users WHERE user_id=?", (user_id,))
+    return c.fetchone()[0]
+
+# ---------- Image Helper ----------
+async def send_event_image(event_name, chat_id, context, caption=None):
+    filename = f"{event_name}.png"
+    try:
+        with open(filename, 'rb') as photo:
+            await context.bot.send_photo(chat_id=chat_id, photo=photo, caption=caption)
+        logger.info(f"Image {filename} sent to {chat_id}")
+    except FileNotFoundError:
+        logger.warning(f"Image file {filename} not found. Skipping.")
+    except Exception as e:
+        logger.error(f"Failed to send event image {filename}: {e}")
+
+# ---------- Bot Configuration ----------
+GROUP_LINK = "https://t.me/+XpMq7iz5g4ViYjc0"
+CHANNEL_LINK = "https://t.me/matoairdrop"
+CONTRACT_ADDRESS = "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63"
+
+MAIN_KEYBOARD = [
+    [KeyboardButton("💰 Balance"), KeyboardButton("🔗 Referral Link")],
+    [KeyboardButton("📤 Withdraw"), KeyboardButton("🎁 Daily Bonus")],
+    [KeyboardButton("📊 Progress"), KeyboardButton("📋 Tasks")],
+    [KeyboardButton("🏠 Main Menu")],
+]
+reply_markup_main = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True, is_persistent=True)
+
+def get_task_keyboard():
+    buttons = [
+        [InlineKeyboardButton("👥 Join Group", url=GROUP_LINK)],
+        [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
+        [InlineKeyboardButton("✅ I've Joined Both", callback_data='verify_tasks')]
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+def get_confirm_keyboard():
+    buttons = [[
+        InlineKeyboardButton("✅ Yes", callback_data='confirm_yes'),
+        InlineKeyboardButton("❌ No", callback_data='confirm_no')
+    ]]
+    return InlineKeyboardMarkup(buttons)
+
+async def is_member(user_id, context):
+    try:
+        group_member = await context.bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
+        group_ok = group_member.status in ['member', 'administrator', 'creator']
+        channel_member = await context.bot.get_chat_member(chat_id=CHANNEL_ID, user_id=user_id)
+        channel_ok = channel_member.status in ['member', 'administrator', 'creator']
+        return group_ok and channel_ok
+    except Exception as e:
+        logger.error(f"Membership check failed for {user_id}: {e}")
+        return False
+
+# ---------- Admin Commands ----------
+async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    if len(context.args) < 2:
+        await update.message.reply_text("Usage: /addpoints <points> <user_id1> [user_id2 ...]")
+        return
+    try:
+        points = int(context.args[0])
+        user_ids = [int(arg) for arg in context.args[1:]]
+    except ValueError:
+        await update.message.reply_text("Points and user IDs must be integers.")
+        return
+    success, failed = 0, 0
+    for uid in user_ids:
+        if get_user(uid):
+            add_points(uid, points)
+            try:
+                await context.bot.send_message(uid, f"🎁 You received {points} $NEAR from admin!")
+            except:
+                pass
+            success += 1
+        else:
+            failed += 1
+    await update.message.reply_text(f"✅ Added {points} $NEAR to {success} users. Failed: {failed} (user not found).")
+
+async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    try:
+        points = int(context.args[0])
+    except (IndexError, ValueError):
+        await update.message.reply_text("Usage: /addpointsall <points>")
+        return
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    count = 0
+    for (uid,) in users:
+        add_points(uid, points)
+        try:
+            await context.bot.send_message(uid, f"🎁 All users received {points} $NEAR from admin!")
+        except:
+            pass
+        count += 1
+    await update.message.reply_text(f"✅ Added {points} $NEAR to all {count} users.")
+
+async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    text = ' '.join(context.args)
+    parts = text.split('|')
+    if len(parts) < 2:
+        await update.message.reply_text("Usage: /addtask Title | Description | Reward (optional)")
+        return
+    title = parts[0].strip()
+    desc = parts[1].strip()
+    reward = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else 0
+    c.execute("INSERT INTO tasks (title, description, reward) VALUES (?,?,?)", (title, desc, reward))
+    conn.commit()
+    await update.message.reply_text(f"✅ Task added: {title}")
+
+async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    text = update.message.text
+    cmd_len = len(update.message.text.split()[0]) + 1
+    tasks_text = text[cmd_len:].strip()
+    if not tasks_text:
+        await update.message.reply_text("Send tasks in format:\nTitle | Description | Reward\nOne per line.")
+        return
+    lines = tasks_text.split('\n')
+    added = 0
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split('|')
+        if len(parts) < 2:
+            continue
+        title = parts[0].strip()
+        desc = parts[1].strip()
+        reward = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else 0
+        c.execute("INSERT INTO tasks (title, description, reward) VALUES (?,?,?)", (title, desc, reward))
+        added += 1
+    conn.commit()
+    await update.message.reply_text(f"✅ Added {added} tasks.")
+
+async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    c.execute("SELECT id, title, description, reward, active FROM tasks")
+    tasks = c.fetchall()
+    if not tasks:
+        await update.message.reply_text("No tasks found.")
+        return
+    msg = "**📋 Current Tasks**\n"
+    for t in tasks:
+        status = "✅" if t[4] else "❌"
+        msg += f"{status} **{t[1]}** (ID: {t[0]})\n> {t[2]}\n> Reward: {t[3]} $NEAR\n\n"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def deletetask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    try:
+        task_id = int(context.args[0])
+    except:
+        await update.message.reply_text("Usage: /deletetask <id>")
+        return
+    c.execute("DELETE FROM tasks WHERE id=?", (task_id,))
+    conn.commit()
+    await update.message.reply_text(f"✅ Task {task_id} deleted.")
+
+# ---------- Diagnostic Command (Admin only) ----------
+async def listimages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    png_files = [f for f in os.listdir('.') if f.endswith('.png')]
+    if png_files:
+        await update.message.reply_text(f"PNG files found: {', '.join(png_files)}")
+    else:
+        await update.message.reply_text("No PNG files found in current directory.")
+
+# ---------- Start Handler ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    first_name = user.first_name or "User"
+
+    referrer_id = None
+    if context.args and context.args[0].startswith('ref'):
+        try:
+            referrer_id = int(context.args[0][3:])
+        except:
+            pass
+
+    existing = get_user(user_id)
+    if not existing:
+        if referrer_id and referrer_id != user_id and get_user(referrer_id):
+            await send_event_image('referral', referrer_id, context, "🎉 **New Referral!**")
+            add_points(referrer_id, 200)
+            add_referral(referrer_id)
+            try:
+                await context.bot.send_message(
+                    referrer_id,
+                    f"🎉 You gained a new referral! +200 $NEAR. Total: {get_user(referrer_id)[4]}"
+                )
+            except:
+                pass
+        else:
+            referrer_id = None
+        create_user(user_id, first_name, referrer_id)
+    else:
+        update_user(user_id, first_name=first_name)
+
+    keyboard = [[InlineKeyboardButton("✅ JOIN AIRDROP", callback_data='join_airdrop')]]
+    reply_markup_inline = InlineKeyboardMarkup(keyboard)
+
+    await send_event_image('welcome', user_id, context, "🚀 **$NEAR Airdrop – The One Closer Than You Think**")
+
+    welcome_text = (
+        f"**Hello {first_name}!** 👋\n\n"
+        f"Welcome to the official **$NEAR Airdrop** on **Binance Smart Chain (BEP-20)**.\n"
+        f"Your points will be converted 1:1 to $NEAR tokens at TGE.\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"**💰 REWARD STRUCTURE**\n"
+        f"• **1,000 $NEAR** (~$4) – Complete verification\n"
+        f"• **200 $NEAR** per referral – Unlimited\n"
+        f"• **150 $NEAR** daily – Claim every 24h\n"
+        f"• **Extra 50 $NEAR** – Shout 'NEAR TO THE MOON' in group\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"**📋 MANDATORY STEPS**\n"
+        f"✅ Join our Telegram Group\n"
+        f"✅ Join our Telegram Channel\n"
+        f"✅ Submit your BSC wallet address\n\n"
+        f"**Contract Address (add to wallet):**\n"
+        f"`{CONTRACT_ADDRESS}`\n\n"
+        f"Tap **\"Join Airdrop\"** to start earning!"
+    )
+    await update.message.reply_text(welcome_text, reply_markup=reply_markup_inline, parse_mode='Markdown')
+    await update.message.reply_text("Use the buttons below:", reply_markup=reply_markup_main)
+
+# ---------- Button Handler ----------
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    user_data = get_user(user_id)
+
+    if not user_data:
+        await query.edit_message_text("Please /start first.")
+        return
+
+    (db_id, db_first_name, db_username, db_wallet, points, referrals,
+     referrer_id, joined, last_daily, daily_streak, tasks_completed, pending_ss) = user_data
+
+    if query.data == 'join_airdrop':
+        if tasks_completed:
+            await query.edit_message_text("✅ You already completed verification! Now refer friends.")
+            return
+        await query.edit_message_text(
+            "**📋 VERIFICATION STEPS**\n\n"
+            "1️⃣ Join Group\n2️⃣ Join Channel\n3️⃣ Submit your Telegram username\n4️⃣ Submit your BSC wallet\n\n"
+            "Click below to join:",
+            reply_markup=get_task_keyboard()
+        )
+    elif query.data == 'verify_tasks':
+        if await is_member(user_id, context):
+            context.user_data['state'] = 'waiting_username'
+            await query.edit_message_text(
+                "✅ Membership confirmed!\n\nPlease send your Telegram username **with @**.\nExample: `@username`"
+            )
+        else:
+            await query.edit_message_text(
+                "❌ You haven't joined both groups yet!\nPlease join and click the button again.",
+                reply_markup=get_task_keyboard()
+            )
+    elif query.data == 'confirm_yes':
+        update_user(user_id, tasks_completed=1)
+        new_points = add_points(user_id, 1000)
+        await send_event_image('task_complete', user_id, context, "🎉 **Verification Complete!**")
+        await query.edit_message_text(
+            f"🎉 **Congratulations!**\n\n"
+            f"1,000 $NEAR credited to your balance!\n"
+            f"New balance: **{new_points} $NEAR**\n\n"
+            f"Now share your referral link and earn 200 $NEAR per friend.\n"
+            f"Don't forget your daily bonus!"
+        )
+        context.user_data['state'] = None
+    elif query.data == 'confirm_no':
+        await query.edit_message_text("❌ Wallet submission cancelled. Use /start to restart.")
+        context.user_data['state'] = None
+
+# ---------- Message Handler ----------
+async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text if update.message.text else ""
+    user_id = update.effective_user.id
+    user_data = get_user(user_id)
+
+    if not user_data:
+        await update.message.reply_text("Please /start first.")
+        return
+
+    (db_id, db_first_name, db_username, db_wallet, points, referrals,
+     referrer_id, joined, last_daily, daily_streak, tasks_completed, pending_ss) = user_data
+
+    state = context.user_data.get('state')
+
+    if update.message.photo:
+        if pending_ss:
+            await update.message.reply_text("You already have a pending screenshot. Please wait for admin approval.")
+        else:
+            photo = update.message.photo[-1]
+            file_id = photo.file_id
+            update_user(user_id, pending_screenshot=file_id)
+            caption = f"📸 Screenshot from user {user_id} (@{update.effective_user.username})\nName: {db_first_name}\nUse /addpoints {user_id} <points> to reward."
+            await context.bot.send_photo(chat_id=ADMIN_ID, photo=file_id, caption=caption)
+            await update.message.reply_text("✅ Screenshot received. Admin will review and add points soon.")
+        return
+
+    if state == 'waiting_username':
+        if text.startswith('@') and len(text) > 1:
+            update_user(user_id, username=text)
+            context.user_data['state'] = 'waiting_wallet'
+            wallet_msg = (
+                f"✅ Username saved.\n\n"
+                f"Now send your **BSC (BEP-20) wallet address**.\n"
+                f"It should start with `0x` and be **42 characters** long.\n\n"
+                f"**Contract Address (import to wallet):**\n"
+                f"`{CONTRACT_ADDRESS}`\n\n"
+                f"*Tap on the contract address to copy it.*"
+            )
+            await update.message.reply_text(wallet_msg, parse_mode='Markdown')
+        else:
+            await update.message.reply_text("❌ Invalid. Send your username with @ (e.g., @username).")
+        return
+
+    if state == 'waiting_wallet':
+        if text.startswith('0x') and len(text) == 42:
+            update_user(user_id, wallet=text)
+            await update.message.reply_text(
+                f"Wallet received: `{text}`\n\nPlease confirm it's correct:",
+                reply_markup=get_confirm_keyboard(),
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text("❌ Invalid wallet. Must start with 0x and be 42 characters.")
+        return
+
+    if text == "💰 Balance":
+        await update.message.reply_text(
+            f"**💰 Your Balance**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"**Points:** `{points} $NEAR`\n"
+            f"**Referrals:** `{referrals}`\n"
+            f"**Wallet:** `{db_wallet or 'Not set'}`\n"
+            f"**Tasks completed:** {'✅' if tasks_completed else '❌'}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"*1,000 $NEAR ≈ $4 at TGE*",
+            parse_mode='Markdown'
+        )
+    elif text == "🔗 Referral Link":
+        bot_username = (await context.bot.get_me()).username
+        link = f"https://t.me/{bot_username}?start=ref{user_id}"
+        await update.message.reply_text(
+            f"🔗 **Your Unique Referral Link**\n`{link}`\n\n"
+            f"Share this link – you get **200 $NEAR** for each friend who joins!\n"
+            f"Total referrals so far: `{referrals}`",
+            parse_mode='Markdown'
+        )
+    elif text == "📤 Withdraw":
+        await send_event_image('withdraw', user_id, context, "📤 **Withdrawals**")
+        await update.message.reply_text(
+            "**📤 Withdrawals**\n\n"
+            "Withdrawals will be available **after the airdrop distribution** on BSC mainnet.\n"
+            f"**Contract Address:** `{CONTRACT_ADDRESS}`\n\n"
+            "*Add the contract to your wallet to see your $NEAR balance.*",
+            parse_mode='Markdown'
+        )
+    elif text == "🎁 Daily Bonus":
+        today = datetime.now().date().isoformat()
+        if last_daily == today:
+            await update.message.reply_text("⏳ You've already claimed today's bonus. Come back tomorrow!")
+        else:
+            bonus = 150
+            new_points = add_points(user_id, bonus)
+            if last_daily == (datetime.now() - timedelta(days=1)).date().isoformat():
+                new_streak = daily_streak + 1
+            else:
+                new_streak = 1
+            update_user(user_id, last_daily=today, daily_streak=new_streak)
+            await send_event_image('daily_bonus', user_id, context, f"🎁 **Daily Bonus +{bonus} $NEAR**")
+            await update.message.reply_text(
+                f"🎁 +{bonus} $NEAR added to your balance!\n"
+                f"New balance: **{new_points} $NEAR**\n"
+                f"Current streak: **{new_streak} days** 🔥",
+                parse_mode='Markdown'
+            )
+        elif text == "📊 Progress":
+        await update.message.reply_text(
+            f"**📊 Your Progress**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Tasks completed: {'✅' if tasks_completed else '❌'}\n"
+            f"✅ Username set: {'✅' if db_username else '❌'}\n"
+            f"✅ Wallet set: {'✅' if db_wallet else '❌'}\n"
+            f"📊 Referrals: `{referrals}`\n"
+            f"🔥 Daily streak: `{daily_streak}` days\n"
+            f"━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode='Markdown'
+        )
+    elif text == "📋 Tasks":
+        c.execute("SELECT title, description, reward FROM tasks WHERE active=1")
+        tasks = c.fetchall()
+        if not tasks:
+            await update.message.reply_text("No active tasks at the moment. Check back later!")
+            return
+        msg = "**📋 Available Tasks**\n\n"
+        for idx, t in enumerate(tasks, 1):
+            msg += f"**{idx}. {t[0]}**\n"
+            msg += f"📝 {t[1]}\n"
+            msg += f"🏆 Reward: `{t[2]} $NEAR`\n\n"
+        msg += "To complete a task, perform the action and send a screenshot.\nAdmin will verify and add points."
+        await update.message.reply_text(msg, parse_mode='Markdown')
+   elif text == "🏠 Main Menu":
+        await update.message.reply_text("🏠 Main Menu", reply_markup=reply_markup_main)
+    else:
+        if state is None:
+            await update.message.reply_text("Use the menu buttons or /start.")
+
+# ---------- Main ----------
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("addpoints", add_points_cmd))
+    app.add_handler(CommandHandler("addpointsall", add_points_all_cmd))
+    app.add_handler(CommandHandler("addtask", addtask_cmd))
+    app.add_handler(CommandHandler("addtasks", addtasks_cmd))
+    app.add_handler(CommandHandler("listtasks", listtasks_cmd))
+    app.add_handler(CommandHandler("deletetask", deletetask_cmd))
+    app.add_handler(CommandHandler("listimages", listimages_cmd))  # Diagnostic command
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_messages))
+    logger.info("Bot started successfully!")
+    app.run_polling()
