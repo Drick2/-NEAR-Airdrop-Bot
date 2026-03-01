@@ -19,7 +19,10 @@ if ADMIN_ID == 0:
     raise ValueError("ADMIN_ID not set in .env file!")
 
 # Logging
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
 # ---------- Database Setup ----------
@@ -79,6 +82,7 @@ def add_referral(user_id):
 
 # ---------- Image Helper ----------
 async def send_event_image(event_name, chat_id, context, caption=None):
+    """Send a themed image. Filename: event_name.png (e.g., balance.png)."""
     filename = f"{event_name}.png"
     try:
         with open(filename, 'rb') as photo:
@@ -88,6 +92,20 @@ async def send_event_image(event_name, chat_id, context, caption=None):
         logger.warning(f"Image file {filename} not found. Skipping.")
     except Exception as e:
         logger.error(f"Failed to send event image {filename}: {e}")
+
+# ---------- Broadcast Helper ----------
+async def notify_all_users(context: ContextTypes.DEFAULT_TYPE, message: str):
+    """Send a message to every user in the database."""
+    c.execute("SELECT user_id FROM users")
+    users = c.fetchall()
+    sent = 0
+    for (uid,) in users:
+        try:
+            await context.bot.send_message(uid, message, parse_mode='Markdown')
+            sent += 1
+        except:
+            pass
+    return sent
 
 # ---------- Bot Configuration ----------
 GROUP_LINK = "https://t.me/+XpMq7iz5g4ViYjc0"
@@ -130,6 +148,7 @@ async def is_member(user_id, context):
 
 # ---------- Admin Commands ----------
 async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add points to one or more specific users: /addpoints <points> <user_id1> [user_id2 ...]"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -156,6 +175,7 @@ async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Added {points} $NEAR to {success} users. Failed: {failed} (user not found).")
 
 async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add points to every user in the database: /addpointsall <points>"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -177,6 +197,7 @@ async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Added {points} $NEAR to all {count} users.")
 
 async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add a single task: /addtask Title | Description | Reward"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -192,7 +213,19 @@ async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     await update.message.reply_text(f"✅ Task added: {title}")
 
+    # Notify all users about the new task
+    notification = (
+        f"**📢 New Task Available!**\n\n"
+        f"**{title}**\n"
+        f"📝 {desc}\n"
+        f"🏆 Reward: `{reward} $NEAR`\n\n"
+        f"Check it out with the **Tasks** button!"
+    )
+    sent = await notify_all_users(context, notification)
+    logger.info(f"Notified {sent} users about new task: {title}")
+
 async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Add multiple tasks, one per line: /addtasks\nTitle | Desc | Reward\n..."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -204,6 +237,7 @@ async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = tasks_text.split('\n')
     added = 0
+    titles = []
     for line in lines:
         line = line.strip()
         if not line:
@@ -216,10 +250,21 @@ async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reward = int(parts[2].strip()) if len(parts) > 2 and parts[2].strip().isdigit() else 0
         c.execute("INSERT INTO tasks (title, description, reward) VALUES (?,?,?)", (title, desc, reward))
         added += 1
+        titles.append(title)
     conn.commit()
     await update.message.reply_text(f"✅ Added {added} tasks.")
 
+    # Notify all users about the new tasks
+    if added > 0:
+        notification = f"**📢 {added} New Task{'s' if added > 1 else ''} Available!**\n\n"
+        for t in titles:
+            notification += f"• {t}\n"
+        notification += "\nCheck them out with the **Tasks** button!"
+        sent = await notify_all_users(context, notification)
+        logger.info(f"Notified {sent} users about {added} new tasks.")
+
 async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """List all tasks (admin only)"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -235,6 +280,7 @@ async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def deletetask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Delete a task by ID: /deletetask <id>"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -247,8 +293,48 @@ async def deletetask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     await update.message.reply_text(f"✅ Task {task_id} deleted.")
 
-# ---------- Diagnostic Command (Admin only) ----------
+async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: send a message to all users. Usage: /broadcast <message>"""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    message = ' '.join(context.args)
+    sent = await notify_all_users(context, message)
+    await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
+
+async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: show bot statistics."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    c.execute("SELECT COUNT(*) FROM users")
+    total_users = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM users WHERE tasks_completed=1")
+    completed_tasks = c.fetchone()[0]
+    c.execute("SELECT SUM(points) FROM users")
+    total_points = c.fetchone()[0] or 0
+    c.execute("SELECT SUM(referrals) FROM users")
+    total_refs = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM tasks WHERE active=1")
+    active_tasks = c.fetchone()[0]
+
+    msg = (
+        f"**📊 Bot Statistics**\n"
+        f"━━━━━━━━━━━━━━━━━━━━━\n"
+        f"👥 Total users: {total_users}\n"
+        f"✅ Tasks completed: {completed_tasks}\n"
+        f"💰 Total points: {total_points} $NEAR\n"
+        f"🔗 Total referrals: {total_refs}\n"
+        f"📋 Active tasks: {active_tasks}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━"
+    )
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
 async def listimages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin: list all PNG files in the current directory."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -383,6 +469,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get('state')
 
+    # Handle screenshot submission
     if update.message.photo:
         if pending_ss:
             await update.message.reply_text("You already have a pending screenshot. Please wait for admin approval.")
@@ -395,6 +482,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Screenshot received. Admin will review and add points soon.")
         return
 
+    # Username submission
     if state == 'waiting_username':
         if text.startswith('@') and len(text) > 1:
             update_user(user_id, username=text)
@@ -412,6 +500,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid. Send your username with @ (e.g., @username).")
         return
 
+    # Wallet submission
     if state == 'waiting_wallet':
         if text.startswith('0x') and len(text) == 42:
             update_user(user_id, wallet=text)
@@ -424,7 +513,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid wallet. Must start with 0x and be 42 characters.")
         return
 
+    # Menu commands
     if text == "💰 Balance":
+        await send_event_image('balance', user_id, context, "💰 **Your Balance**")
         await update.message.reply_text(
             f"**💰 Your Balance**\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -514,6 +605,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("addtasks", addtasks_cmd))
     app.add_handler(CommandHandler("listtasks", listtasks_cmd))
     app.add_handler(CommandHandler("deletetask", deletetask_cmd))
+    app.add_handler(CommandHandler("broadcast", broadcast_cmd))
+    app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("listimages", listimages_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
