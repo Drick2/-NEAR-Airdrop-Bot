@@ -473,7 +473,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Current streak: **{new_streak} days** 🔥",
                 parse_mode='Markdown'
             )
-        elif text == "📊 Progress":
+    elif text == "📊 Progress":
         await update.message.reply_text(
             f"**📊 Your Progress**\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -498,7 +498,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🏆 Reward: `{t[2]} $NEAR`\n\n"
         msg += "To complete a task, perform the action and send a screenshot.\nAdmin will verify and add points."
         await update.message.reply_text(msg, parse_mode='Markdown')
-   elif text == "🏠 Main Menu":
+    elif text == "🏠 Main Menu":
         await update.message.reply_text("🏠 Main Menu", reply_markup=reply_markup_main)
     else:
         if state is None:
@@ -514,7 +514,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("addtasks", addtasks_cmd))
     app.add_handler(CommandHandler("listtasks", listtasks_cmd))
     app.add_handler(CommandHandler("deletetask", deletetask_cmd))
-    app.add_handler(CommandHandler("listimages", listimages_cmd))  # Diagnostic command
+    app.add_handler(CommandHandler("listimages", listimages_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     app.add_handler(MessageHandler(filters.PHOTO, handle_messages))
