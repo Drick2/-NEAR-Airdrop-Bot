@@ -79,11 +79,6 @@ def add_referral(user_id):
 
 # ---------- Image Helper ----------
 async def send_event_image(event_name, chat_id, context, caption=None):
-    """
-    Send a themed image for different events.
-    Image files should be placed in the bot's directory with names:
-    welcome.png, task_complete.png, daily_bonus.png, referral.png, withdraw.png
-    """
     filename = f"{event_name}.png"
     try:
         with open(filename, 'rb') as photo:
@@ -96,9 +91,8 @@ async def send_event_image(event_name, chat_id, context, caption=None):
 # ---------- Bot Configuration ----------
 GROUP_LINK = "https://t.me/+XpMq7iz5g4ViYjc0"
 CHANNEL_LINK = "https://t.me/matoairdrop"
-CONTRACT_ADDRESS = "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63"  # Your $NEAR contract
+CONTRACT_ADDRESS = "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63"
 
-# Main persistent keyboard
 MAIN_KEYBOARD = [
     [KeyboardButton("💰 Balance"), KeyboardButton("🔗 Referral Link")],
     [KeyboardButton("📤 Withdraw"), KeyboardButton("🎁 Daily Bonus")],
@@ -108,7 +102,6 @@ MAIN_KEYBOARD = [
 reply_markup_main = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True, is_persistent=True)
 
 def get_task_keyboard():
-    """Keyboard with join buttons for group and channel"""
     buttons = [
         [InlineKeyboardButton("👥 Join Group", url=GROUP_LINK)],
         [InlineKeyboardButton("📢 Join Channel", url=CHANNEL_LINK)],
@@ -124,7 +117,6 @@ def get_confirm_keyboard():
     return InlineKeyboardMarkup(buttons)
 
 async def is_member(user_id, context):
-    """Check if user is a member of both group and channel"""
     try:
         group_member = await context.bot.get_chat_member(chat_id=GROUP_ID, user_id=user_id)
         group_ok = group_member.status in ['member', 'administrator', 'creator']
@@ -137,7 +129,6 @@ async def is_member(user_id, context):
 
 # ---------- Admin Commands ----------
 async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add points to one or more specific users: /addpoints <points> <user_id1> [user_id2 ...]"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -164,7 +155,6 @@ async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Added {points} $NEAR to {success} users. Failed: {failed} (user not found).")
 
 async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add points to every user in the database: /addpointsall <points>"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -186,7 +176,6 @@ async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Added {points} $NEAR to all {count} users.")
 
 async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a single task: /addtask Title | Description | Reward"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -203,7 +192,6 @@ async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Task added: {title}")
 
 async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add multiple tasks, one per line: /addtasks\nTitle | Desc | Reward\n..."""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -231,7 +219,6 @@ async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Added {added} tasks.")
 
 async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all tasks (admin only)"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -247,7 +234,6 @@ async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def deletetask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a task by ID: /deletetask <id>"""
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -266,7 +252,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     first_name = user.first_name or "User"
 
-    # Referral detection
     referrer_id = None
     if context.args and context.args[0].startswith('ref'):
         try:
@@ -274,11 +259,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-    # Create or update user
     existing = get_user(user_id)
     if not existing:
         if referrer_id and referrer_id != user_id and get_user(referrer_id):
-            # Reward referrer
             await send_event_image('referral', referrer_id, context, "🎉 **New Referral!**")
             add_points(referrer_id, 200)
             add_referral(referrer_id)
@@ -295,14 +278,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         update_user(user_id, first_name=first_name)
 
-    # Join button
     keyboard = [[InlineKeyboardButton("✅ JOIN AIRDROP", callback_data='join_airdrop')]]
     reply_markup_inline = InlineKeyboardMarkup(keyboard)
 
-    # Send welcome image
     await send_event_image('welcome', user_id, context, "🚀 **$NEAR Airdrop – The One Closer Than You Think**")
 
-    # Crypto‑styled welcome message
     welcome_text = (
         f"**Hello {first_name}!** 👋\n\n"
         f"Welcome to the official **$NEAR Airdrop** on **Binance Smart Chain (BEP-20)**.\n"
@@ -391,7 +371,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     state = context.user_data.get('state')
 
-    # Handle screenshot submission
     if update.message.photo:
         if pending_ss:
             await update.message.reply_text("You already have a pending screenshot. Please wait for admin approval.")
@@ -404,7 +383,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("✅ Screenshot received. Admin will review and add points soon.")
         return
 
-    # Username submission
     if state == 'waiting_username':
         if text.startswith('@') and len(text) > 1:
             update_user(user_id, username=text)
@@ -422,7 +400,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid. Send your username with @ (e.g., @username).")
         return
 
-    # Wallet submission
     if state == 'waiting_wallet':
         if text.startswith('0x') and len(text) == 42:
             update_user(user_id, wallet=text)
@@ -435,7 +412,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid wallet. Must start with 0x and be 42 characters.")
         return
 
-    # Menu commands
     if text == "💰 Balance":
         await update.message.reply_text(
             f"**💰 Your Balance**\n"
@@ -477,4 +453,29 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 new_streak = daily_streak + 1
             else:
                 new_streak = 1
-           
+            update_user(user_id, last_daily=today, daily_streak=new_streak)
+            await send_event_image('daily_bonus', user_id, context, f"🎁 **Daily Bonus +{bonus} $NEAR**")
+            await update.message.reply_text(
+                f"🎁 +{bonus} $NEAR added to your balance!\n"
+                f"New balance: **{new_points} $NEAR**\n"
+                f"Current streak: **{new_streak} days** 🔥",
+                parse_mode='Markdown'
+            )
+    elif text == "📊 Progress":
+        await update.message.reply_text(
+            f"**📊 Your Progress**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ Tasks completed: {'✅' if tasks_completed else '❌'}\n"
+            f"✅ Username set: {'✅' if db_username else '❌'}\n"
+            f"✅ Wallet set: {'✅' if db_wallet else '❌'}\n"
+            f"📊 Referrals: `{referrals}`\n"
+            f"🔥 Daily streak: `{daily_streak}` days\n"
+            f"━━━━━━━━━━━━━━━━━━━━━",
+            parse_mode='Markdown'
+        )
+    elif text == "📋 Tasks":
+    c.execute("SELECT title, description, reward FROM tasks WHERE active=1")
+    tasks = c.fetchall()
+    if not tasks:
+        await update.message.reply_text("No active tasks at the moment. Check back later!")
+        return
