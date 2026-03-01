@@ -25,6 +25,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ---------- Group Ignore Helper ----------
+async def ignore_groups(update: Update) -> bool:
+    """Return True if the message is from a group or supergroup."""
+    chat_type = update.effective_chat.type if update.effective_chat else None
+    return chat_type in ["group", "supergroup"]
+
 # ---------- Database Setup ----------
 conn = sqlite3.connect('users.db', check_same_thread=False)
 c = conn.cursor()
@@ -148,7 +154,8 @@ async def is_member(user_id, context):
 
 # ---------- Admin Commands ----------
 async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add points to one or more specific users: /addpoints <points> <user_id1> [user_id2 ...]"""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -175,7 +182,8 @@ async def add_points_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Added {points} $NEAR to {success} users. Failed: {failed} (user not found).")
 
 async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add points to every user in the database: /addpointsall <points>"""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -197,7 +205,8 @@ async def add_points_all_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(f"✅ Added {points} $NEAR to all {count} users.")
 
 async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add a single task: /addtask Title | Description | Reward"""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -225,7 +234,8 @@ async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Notified {sent} users about new task: {title}")
 
 async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Add multiple tasks, one per line: /addtasks\nTitle | Desc | Reward\n..."""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -264,7 +274,8 @@ async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"Notified {sent} users about {added} new tasks.")
 
 async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """List all tasks (admin only)"""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -280,7 +291,8 @@ async def listtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def deletetask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Delete a task by ID: /deletetask <id>"""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -294,7 +306,8 @@ async def deletetask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Task {task_id} deleted.")
 
 async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: send a message to all users. Usage: /broadcast <message>"""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -306,7 +319,8 @@ async def broadcast_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ Broadcast sent to {sent} users.")
 
 async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: show bot statistics."""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -334,7 +348,8 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def listimages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin: list all PNG files in the current directory."""
+    if await ignore_groups(update):
+        return
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("⛔ Unauthorized.")
         return
@@ -346,6 +361,8 @@ async def listimages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Start Handler ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await ignore_groups(update):
+        return
     user = update.effective_user
     user_id = user.id
     first_name = user.first_name or "User"
@@ -405,6 +422,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Button Handler ----------
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await ignore_groups(update):
+        return
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
@@ -456,6 +475,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- Message Handler ----------
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if await ignore_groups(update):
+        return
     text = update.message.text if update.message.text else ""
     user_id = update.effective_user.id
     user_data = get_user(user_id)
