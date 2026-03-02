@@ -1,6 +1,7 @@
 import os
 import sqlite3
 import logging
+import re  # <-- added for URL extraction
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
@@ -551,10 +552,13 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔗 Referral Link":
         bot_username = (await context.bot.get_me()).username
         link = f"https://t.me/{bot_username}?start=ref{user_id}"
+        # Persuasive referral message
         await update.message.reply_text(
-            f"🔗 **Your Unique Referral Link**\n`{link}`\n\n"
-            f"Share this link – you get **200 $NEAR** for each friend who joins!\n"
-            f"Total referrals so far: `{referrals}`",
+            f"🚀 **1000 $NEAR ($4) are already waiting for you!**\n\n"
+            f"Just tap the link below and start your airdrop journey:\n"
+            f"{link}\n\n"
+            f"Share this link with friends – you'll earn **200 $NEAR** for every friend who joins!\n"
+            f"**Your referrals so far:** `{referrals}`",
             parse_mode='Markdown'
         )
     elif text == "📤 Withdraw":
@@ -603,13 +607,29 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not tasks:
             await update.message.reply_text("No active tasks at the moment. Check back later!")
             return
-        msg = "**📋 Available Tasks**\n\n"
-        for idx, t in enumerate(tasks, 1):
-            msg += f"**{idx}. {t[0]}**\n"
-            msg += f"📝 {t[1]}\n"
-            msg += f"🏆 Reward: `{t[2]} $NEAR`\n\n"
-        msg += "To complete a task, perform the action and send a screenshot.\nAdmin will verify and add points."
-        await update.message.reply_text(msg, parse_mode='Markdown')
+
+        for title, desc, reward in tasks:
+            # Try to extract a URL from the description
+            url_match = re.search(r'(https?://[^\s]+)', desc)
+            task_link = url_match.group(0) if url_match else None
+
+            if task_link:
+                keyboard = [[InlineKeyboardButton(f"🔗 {title}", url=task_link)]]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await update.message.reply_text(
+                    f"**{title}**\n📝 {desc}\n🏆 Reward: `{reward} $NEAR`\n\nClick the button below to start:",
+                    reply_markup=reply_markup,
+                    parse_mode='Markdown'
+                )
+            else:
+                await update.message.reply_text(
+                    f"**{title}**\n📝 {desc}\n🏆 Reward: `{reward} $NEAR`",
+                    parse_mode='Markdown'
+                )
+
+        await update.message.reply_text(
+            "After completing a task, send a screenshot here.\nAdmin will verify and add points."
+        )
     elif text == "🏠 Main Menu":
         await update.message.reply_text("🏠 Main Menu", reply_markup=reply_markup_main)
     else:
