@@ -601,34 +601,39 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"━━━━━━━━━━━━━━━━━━━━━",
             parse_mode='Markdown'
         )
-    elif text == "📋 Tasks":
-        c.execute("SELECT title, description, reward FROM tasks WHERE active=1")
-        tasks = c.fetchall()
-        if not tasks:
-            await update.message.reply_text("No active tasks at the moment. Check back later!")
-            return
+     elif text == "📋 Tasks":
+    c.execute("SELECT title, description, reward FROM tasks WHERE active=1")
+    tasks = c.fetchall()
+    if not tasks:
+        await update.message.reply_text("No active tasks at the moment. Check back later!")
+        return
 
-        for title, desc, reward in tasks:
-            # Try to extract a URL from the description
-            url_match = re.search(r'(https?://[^\s]+)', desc)
-            task_link = url_match.group(0) if url_match else None
+    for title, desc, reward in tasks:
+        # Try to extract a URL from the description
+        url_match = re.search(r'(https?://[^\s]+)', desc)
+        task_link = url_match.group(0) if url_match else None
 
-            if task_link:
-                keyboard = [[InlineKeyboardButton(f"🔗 {title}", url=task_link)]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text(
-                    f"**{title}**\n📝 {desc}\n🏆 Reward: `{reward} $NEAR`\n\nClick the button below to start:",
-                    reply_markup=reply_markup,
-                    parse_mode='Markdown'
-                )
-            else:
-                await update.message.reply_text(
-                    f"**{title}**\n📝 {desc}\n🏆 Reward: `{reward} $NEAR`",
-                    parse_mode='Markdown'
-                )
+        # Remove the URL from the description text (clean display)
+        clean_desc = re.sub(r'https?://[^\s]+', '', desc).strip()
+        # Clean up any leftover punctuation or spaces
+        clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
 
-        await update.message.reply_text(
-            "After completing a task, send a screenshot here.\nAdmin will verify and add points."
+        if task_link:
+            keyboard = [[InlineKeyboardButton(f"🔗 {title}", url=task_link)]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                f"**{title}**\n📝 {clean_desc}\n🏆 Reward: `{reward} $NEAR`\n\nClick the button below to start:",
+                reply_markup=reply_markup,
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"**{title}**\n📝 {clean_desc}\n🏆 Reward: `{reward} $NEAR`",
+                parse_mode='Markdown'
+            )
+
+    await update.message.reply_text(
+        "After completing a task, send a screenshot here.\nAdmin will verify and add points."
         )
     elif text == "🏠 Main Menu":
         await update.message.reply_text("🏠 Main Menu", reply_markup=reply_markup_main)
