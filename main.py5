@@ -2,10 +2,13 @@ import os
 import sqlite3
 import logging
 import re
+import random
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # Load environment variables
 load_dotenv()
@@ -35,7 +38,7 @@ async def ignore_groups(update: Update) -> bool:
 conn = sqlite3.connect('users.db', check_same_thread=False)
 c = conn.cursor()
 
-# Create users table if not exists (includes last_mine column)
+# Users table (with last_mine column)
 c.execute('''CREATE TABLE IF NOT EXISTS users
              (user_id INTEGER PRIMARY KEY,
               first_name TEXT,
@@ -49,16 +52,35 @@ c.execute('''CREATE TABLE IF NOT EXISTS users
               daily_streak INTEGER DEFAULT 0,
               tasks_completed INTEGER DEFAULT 0,
               pending_screenshot TEXT,
-              last_mine TEXT)''')  # new column for mining cooldown
+              last_mine TEXT)''')
 conn.commit()
 
-# Create tasks table
+# Tasks table
 c.execute('''CREATE TABLE IF NOT EXISTS tasks
              (id INTEGER PRIMARY KEY AUTOINCREMENT,
               title TEXT NOT NULL,
               description TEXT,
               reward INTEGER DEFAULT 0,
               active INTEGER DEFAULT 1)''')
+conn.commit()
+
+# Contests tables
+c.execute('''CREATE TABLE IF NOT EXISTS contests
+             (id INTEGER PRIMARY KEY AUTOINCREMENT,
+              phrase TEXT NOT NULL,
+              reward INTEGER NOT NULL,
+              max_winners INTEGER NOT NULL,
+              started_at TEXT,
+              ended_at TEXT DEFAULT NULL,
+              active INTEGER DEFAULT 1)''')
+conn.commit()
+
+c.execute('''CREATE TABLE IF NOT EXISTS contest_entries
+             (contest_id INTEGER,
+              user_id INTEGER,
+              username TEXT,
+              entered_at TEXT,
+              PRIMARY KEY (contest_id, user_id))''')
 conn.commit()
 
 def get_user(user_id):
@@ -90,9 +112,8 @@ def add_referral(user_id):
     c.execute("SELECT referrals FROM users WHERE user_id=?", (user_id,))
     return c.fetchone()[0]
 
-# ---------- Image Helper (using absolute path) ----------
+# ---------- Image Helper (absolute path) ----------
 async def send_event_image(event_name, chat_id, context, caption=None):
-    # Use absolute path based on script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     filename = os.path.join(script_dir, f"{event_name}.png")
     try:
@@ -122,12 +143,12 @@ GROUP_LINK = "https://t.me/+XpMq7iz5g4ViYjc0"
 CHANNEL_LINK = "https://t.me/matoairdrop"
 CONTRACT_ADDRESS = "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63"
 
-# New keyboard with Mining button
 MAIN_KEYBOARD = [
     [KeyboardButton("💰 Balance"), KeyboardButton("🔗 Referral Link")],
     [KeyboardButton("📤 Withdraw"), KeyboardButton("🎁 Daily Bonus")],
-    [KeyboardButton("⛏️ Mine NEAR"), KeyboardButton("📋 Tasks")],
-    [KeyboardButton("📊 Progress"), KeyboardButton("🏠 Main Menu")],
+    [KeyboardButton("⛏️ Mine NEAR"), KeyboardButton("📊 Progress")],
+    [KeyboardButton("📋 Tasks"), KeyboardButton("🏆 Leaderboard")],
+    [KeyboardButton("🏠 Main Menu")],
 ]
 reply_markup_main = ReplyKeyboardMarkup(MAIN_KEYBOARD, resize_keyboard=True, is_persistent=True)
 
@@ -227,7 +248,6 @@ async def addtask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn.commit()
     await update.message.reply_text(f"✅ Task added: {title}")
 
-    # Notify all users about the new task
     notification = (
         f"**📢 New Task Available!**\n\n"
         f"**{title}**\n"
@@ -268,8 +288,6 @@ async def addtasks_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         titles.append(title)
     conn.commit()
     await update.message.reply_text(f"✅ Added {added} tasks.")
-
-    # Notify all users about the new tasks
     if added > 0:
         notification = f"**📢 {added} New Task{'s' if added > 1 else ''} Available!**\n\n"
         for t in titles:
@@ -339,7 +357,6 @@ async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_refs = c.fetchone()[0] or 0
     c.execute("SELECT COUNT(*) FROM tasks WHERE active=1")
     active_tasks = c.fetchone()[0]
-
     msg = (
         f"**📊 Bot Statistics**\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
@@ -364,6 +381,95 @@ async def listimages_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"PNG files found: {', '.join(png_files)}")
     else:
         await update.message.reply_text("No PNG files found in current directory.")
+
+# ---------- Contest Admin Commands ----------
+async def startcontest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    # Usage: /startcontest "phrase" reward max_winners
+    if len(context.args) < 3:
+        await update.message.reply_text("Usage: /startcontest \"phrase\" reward max_winners")
+        return
+    phrase = context.args[0]
+    try:
+        reward = int(context.args[1])
+        max_winners = int(context.args[2])
+    except ValueError:
+        await update.message.reply_text("Reward and max_winners must be integers.")
+        return
+    now = datetime.now().isoformat()
+    c.execute("""
+        INSERT INTO contests (phrase, reward, max_winners, started_at, active)
+        VALUES (?,?,?,?,1)
+    """, (phrase, reward, max_winners, now))
+    conn.commit()
+    contest_id = c.lastrowid
+    # Broadcast to all users
+    msg = (
+        f"🎉 **Contest Started!**\n\n"
+        f"Be the first **{max_winners}** to post the exact phrase:\n"
+        f"`{phrase}`\n"
+        f"in the group and win **{reward} $NEAR**!\n\n"
+        f"Join the group: {GROUP_LINK}"
+    )
+    await notify_all_users(context, msg)
+    await update.message.reply_text(f"Contest #{contest_id} started.")
+
+async def endcontest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("⛔ Unauthorized.")
+        return
+    try:
+        contest_id = int(context.args[0])
+    except:
+        await update.message.reply_text("Usage: /endcontest <contest_id>")
+        return
+    c.execute("UPDATE contests SET active=0, ended_at=? WHERE id=?", (datetime.now().isoformat(), contest_id))
+    conn.commit()
+    await update.message.reply_text(f"Contest #{contest_id} ended.")
+
+# ---------- Group Contest Handler (must be registered before the main message handler) ----------
+async def contest_group_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Only process group messages
+    if update.effective_chat.type not in ["group", "supergroup"]:
+        return
+    # Check if any active contest
+    c.execute("SELECT id, phrase, reward, max_winners FROM contests WHERE active=1")
+    contest = c.fetchone()
+    if not contest:
+        return
+    contest_id, phrase, reward, max_winners = contest
+    text = update.message.text
+    if text != phrase:
+        return  # wrong phrase
+    user_id = update.effective_user.id
+    # Check if user already entered
+    c.execute("SELECT 1 FROM contest_entries WHERE contest_id=? AND user_id=?", (contest_id, user_id))
+    if c.fetchone():
+        return  # already entered
+    # Count current entries
+    c.execute("SELECT COUNT(*) FROM contest_entries WHERE contest_id=?", (contest_id,))
+    count = c.fetchone()[0]
+    if count >= max_winners:
+        return  # contest full
+    # Add entry
+    now = datetime.now().isoformat()
+    username = update.effective_user.username or ""
+    c.execute("INSERT INTO contest_entries (contest_id, user_id, username, entered_at) VALUES (?,?,?,?)",
+              (contest_id, user_id, username, now))
+    conn.commit()
+    # Reward immediately
+    new_points = add_points(user_id, reward)
+    await update.message.reply_text(f"🎉 You won! {reward} $NEAR added to your balance. New balance: {new_points}")
+    # Check if contest now full
+    c.execute("SELECT COUNT(*) FROM contest_entries WHERE contest_id=?", (contest_id,))
+    new_count = c.fetchone()[0]
+    if new_count >= max_winners:
+        c.execute("UPDATE contests SET active=0, ended_at=? WHERE id=?", (now, contest_id))
+        conn.commit()
+        await update.message.reply_text(f"🏁 Contest finished! {max_winners} winners have been rewarded.")
+        await notify_all_users(context, f"🏁 The contest has ended. {max_winners} users won {reward} $NEAR each!")
 
 # ---------- Start Handler ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -413,7 +519,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• **1,000 $NEAR** (~$4) – Complete verification\n"
         f"• **200 $NEAR** per referral – Unlimited\n"
         f"• **150 $NEAR** daily – Claim every 24h\n"
-        f"• **⛏️ Mine 1 $NEAR** every 60 seconds\n"
+        f"• **⛏️ Mine 1–10000 $NEAR** every 60 seconds\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n\n"
         f"**📋 MANDATORY STEPS**\n"
         f"✅ Join our Telegram Group\n"
@@ -594,10 +700,9 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode='Markdown'
             )
     elif text == "⛏️ Mine NEAR":
-        # Mining logic – 60 second cooldown
         now = datetime.now()
         cooldown_seconds = 60
-        mine_reward = 1  # 1 NEAR per mine
+        mine_reward = random.randint(1, 10000)
 
         if last_mine:
             last_time = datetime.fromisoformat(last_mine)
@@ -611,7 +716,6 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 return
 
-        # Eligible to mine
         new_points = add_points(user_id, mine_reward)
         update_user(user_id, last_mine=now.isoformat())
         await send_event_image('mine', user_id, context, f"⛏️ **+{mine_reward} $NEAR Mined!**")
@@ -642,11 +746,8 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         for title, desc, reward in tasks:
-            # Try to extract a URL from the description
             url_match = re.search(r'(https?://[^\s]+)', desc)
             task_link = url_match.group(0) if url_match else None
-
-            # Remove the URL from the description text (clean display)
             clean_desc = re.sub(r'https?://[^\s]+', '', desc).strip()
             clean_desc = re.sub(r'\s+', ' ', clean_desc).strip()
 
@@ -667,15 +768,42 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             "After completing a task, send a screenshot here.\nAdmin will verify and add points."
         )
+    elif text == "🏆 Leaderboard":
+        c.execute("""
+            SELECT first_name, referrals FROM users 
+            WHERE referrals > 0 
+            ORDER BY referrals DESC 
+            LIMIT 10
+        """)
+        top = c.fetchall()
+        if not top:
+            await update.message.reply_text("No referrals yet. Be the first!")
+            return
+        msg = "**🏆 Top Referrers**\n\n"
+        for i, (name, refs) in enumerate(top, 1):
+            msg += f"{i}. {name} – {refs} referrals\n"
+        await update.message.reply_text(msg, parse_mode='Markdown')
     elif text == "🏠 Main Menu":
         await update.message.reply_text("🏠 Main Menu", reply_markup=reply_markup_main)
     else:
         if state is None:
             await update.message.reply_text("Use the menu buttons or /start.")
 
+# ---------- Scheduled Reminder ----------
+async def send_daily_reminder(context: ContextTypes.DEFAULT_TYPE):
+    message = (
+        "⏰ **Daily Reminder**\n\n"
+        "Don't forget to claim your **150 $NEAR Daily Bonus**!\n"
+        "Also, you can ⛏️ mine every 60 seconds for random rewards (1–10000 $NEAR).\n\n"
+        "Tap the buttons below to get started!"
+    )
+    await notify_all_users(context, message)
+
 # ---------- Main ----------
 if __name__ == '__main__':
     app = ApplicationBuilder().token(TOKEN).build()
+
+    # Register handlers (order matters)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addpoints", add_points_cmd))
     app.add_handler(CommandHandler("addpointsall", add_points_all_cmd))
@@ -686,8 +814,29 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("broadcast", broadcast_cmd))
     app.add_handler(CommandHandler("stats", stats_cmd))
     app.add_handler(CommandHandler("listimages", listimages_cmd))
+    app.add_handler(CommandHandler("startcontest", startcontest_cmd))
+    app.add_handler(CommandHandler("endcontest", endcontest_cmd))
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Group contest handler (must come before main message handler)
+    app.add_handler(MessageHandler(
+        filters.ChatType.GROUPS & filters.TEXT & ~filters.COMMAND,
+        contest_group_handler
+    ))
+
+    # Main message handler (ignores groups)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     app.add_handler(MessageHandler(filters.PHOTO, handle_messages))
+
+    # Set up scheduler for daily reminders
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        send_daily_reminder,
+        trigger=CronTrigger(hour=10, minute=0),  # 10:00 UTC every day
+        args=[app],
+        id='daily_reminder'
+    )
+    scheduler.start()
+
     logger.info("Bot started successfully!")
     app.run_polling()
