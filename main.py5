@@ -14,7 +14,7 @@ from apscheduler.triggers.cron import CronTrigger
 load_dotenv()
 TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-GROUP_ID = -5217445909          # Your group ID
+GROUP_ID = -1003753838779          # Your group ID
 CHANNEL_ID = -1003863200197     # Your channel ID
 
 if not TOKEN:
@@ -139,8 +139,8 @@ async def notify_all_users(context: ContextTypes.DEFAULT_TYPE, message: str):
     return sent
 
 # ---------- Bot Configuration ----------
-GROUP_LINK = "https://t.me/+XpMq7iz5g4ViYjc0"
-CHANNEL_LINK = "https://t.me/matoairdrop"
+GROUP_LINK = "https://t.me/nearairdrop2026"
+CHANNEL_LINK = "https://t.me/nearairdrop2026"
 CONTRACT_ADDRESS = "0x1Fa4a73a3F0133f0025378af00236f3aBDEE5D63"
 
 MAIN_KEYBOARD = [
